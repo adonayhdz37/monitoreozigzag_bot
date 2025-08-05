@@ -8,4 +8,3 @@ bot.start((ctx) => ctx.reply('🤖 Bot activo y listo para monitorear tokens.'))
 bot.launch();
 
 startWatcher(bot);
-
