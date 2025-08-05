@@ -8,4 +8,4 @@ bot.start((ctx) => ctx.reply('🤖 Bot activo y listo para monitorear tokens.'))
 bot.launch();
 
 startWatcher(bot);
-bot.telegram.sendMessage(process.env.TELEGRAM_CHAT_ID, "🚀 Bot iniciado correctamente");
+
