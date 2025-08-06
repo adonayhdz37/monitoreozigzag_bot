@@ -9,6 +9,9 @@ module.exports = function startWatcher(bot) {
   let monitoredTokens = {};
   let lastSignature = null;
 
+  let isCheckingNewTokens = false;
+  let isCheckingPrices = false;
+
   async function getRecentSignatures() {
     const payload = {
       jsonrpc: "2.0",
@@ -23,9 +26,13 @@ module.exports = function startWatcher(bot) {
       ]
     };
 
-    const res = await axios.post(RPC_URL, payload);
-    const signatures = res.data.result || [];
-    return signatures;
+    try {
+      const res = await axios.post(RPC_URL, payload);
+      return res.data.result || [];
+    } catch (error) {
+      console.error("❌ Error al obtener firmas:", error.message);
+      return [];
+    }
   }
 
   async function getTransaction(signature) {
@@ -36,11 +43,19 @@ module.exports = function startWatcher(bot) {
       params: [signature, { encoding: "jsonParsed" }]
     };
 
-    const res = await axios.post(RPC_URL, payload);
-    return res.data.result;
+    try {
+      const res = await axios.post(RPC_URL, payload);
+      return res.data.result;
+    } catch (error) {
+      console.error(`❌ Error al obtener transacción ${signature}:`, error.message);
+      return null;
+    }
   }
 
   async function checkForNewTokens() {
+    if (isCheckingNewTokens) return; // evitar solapamientos
+    isCheckingNewTokens = true;
+
     try {
       const signatures = await getRecentSignatures();
 
@@ -69,7 +84,13 @@ module.exports = function startWatcher(bot) {
               dropped: false,
             };
 
-            bot.telegram.sendMessage(CHAT_ID, `🆕 Token creado: ${mintAddress}`);
+            bot.telegram.sendMessage(
+              CHAT_ID,
+              `🆕 *Token creado detectado*\n\n🔹 Mint: \`${mintAddress}\`\n⏱️ Hora: ${timeStart.toLocaleTimeString()}`,
+              { parse_mode: "Markdown" }
+            );
+
+            console.log(`✅ Token creado: ${mintAddress}`);
             createdTokens[sig] = true;
           }
         }
@@ -79,37 +100,49 @@ module.exports = function startWatcher(bot) {
         lastSignature = signatures[0].signature;
       }
     } catch (err) {
-      console.error("Error al verificar nuevos tokens:", err.message);
+      console.error("❌ Error al verificar nuevos tokens:", err.message);
+    } finally {
+      isCheckingNewTokens = false;
     }
   }
 
   async function checkTokenPrices() {
-    for (let mint in monitoredTokens) {
-      if (monitoredTokens[mint].dropped) continue;
+    if (isCheckingPrices) return;
+    isCheckingPrices = true;
+
+    for (const mint in monitoredTokens) {
+      const token = monitoredTokens[mint];
+      if (token.dropped) continue;
 
       try {
         const res = await axios.get(`https://api.dexscreener.com/latest/dex/pairs/solana/${mint}`);
         if (!res.data.pair || !res.data.pair.priceUsd) continue;
 
         const price = parseFloat(res.data.pair.priceUsd);
-        const data = monitoredTokens[mint];
+        if (price > token.ath) token.ath = price;
 
-        if (price > data.ath) data.ath = price;
-
-        const dropPercent = ((data.ath - price) / data.ath) * 100;
+        const dropPercent = ((token.ath - price) / token.ath) * 100;
 
         if (dropPercent >= 35) {
           const timeEnd = new Date();
-          const duration = Math.round((timeEnd - data.timeStart) / 1000);
+          const duration = Math.round((timeEnd - token.timeStart) / 1000);
           const timeFormatted = secondsToHMS(duration);
 
-          bot.telegram.sendMessage(CHAT_ID, `⚠️ Token ${mint} cayó un 35%\n⏱ Tiempo desde su creación: ${timeFormatted}`);
-          monitoredTokens[mint].dropped = true;
+          bot.telegram.sendMessage(
+            CHAT_ID,
+            `⚠️ *Caída detectada del token*\n\n🔹 Mint: \`${mint}\`\n📉 Caída: ${dropPercent.toFixed(2)}%\n⏱️ Tiempo activo: ${timeFormatted}`,
+            { parse_mode: "Markdown" }
+          );
+
+          token.dropped = true;
+          console.log(`⚠️ Token ${mint} cayó un 35% después de ${timeFormatted}`);
         }
       } catch (err) {
-        console.log(`No se pudo obtener el precio del token ${mint}`);
+        console.log(`⚠️ No se pudo obtener el precio del token ${mint}`);
       }
     }
+
+    isCheckingPrices = false;
   }
 
   function secondsToHMS(secs) {
@@ -119,6 +152,7 @@ module.exports = function startWatcher(bot) {
     return `${h}h ${m}m ${s}s`;
   }
 
-  setInterval(checkForNewTokens, 5000); // cada 5s
-  setInterval(checkTokenPrices, 10000); // cada 10s
+  setInterval(checkForNewTokens, 5000); // cada 5 segundos
+  setInterval(checkTokenPrices, 10000); // cada 10 segundos
 };
+
